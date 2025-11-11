@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎙️ Arabic Voice AI Assistant</title>
+    <style>
+        body { font-family: Arial; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h3 { color: #333; }
+        .mode-selector { margin: 20px 0; padding: 15px; background: #f0f0f0; border-radius: 5px; }
+        .mode-selector label { margin-right: 20px; font-size: 16px; }
+        textarea { font-size: 16px; padding: 10px; width: 100%; box-sizing: border-box; border: 2px solid #ddd; border-radius: 5px; }
+        button { padding: 12px 24px; font-size: 16px; cursor: pointer; margin: 5px; border: none; border-radius: 5px; background: #4CAF50; color: white; }
+        button:hover { background: #45a049; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        #log { background: #f0f0f0; padding: 15px; max-height: 400px; overflow-y: auto; border-radius: 5px; font-family: monospace; font-size: 12px; }
+        .recording { background: #f44336 !important; }
+        #audioContainer { margin: 20px 0; padding: 15px; background: #e8f5e9; border-radius: 5px; min-height: 60px; }
+        #audioContainer p { margin: 0 0 10px 0; color: #2e7d32; font-weight: bold; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h3>🎙️ Arabic Voice AI Assistant</h3>
+        
+        <div class="mode-selector">
+            <strong>Mode:</strong>
+            <label><input type="radio" name="mode" value="text" checked onchange="switchMode()"> 📝 Text Mode</label>
+            <label><input type="radio" name="mode" value="voice" onchange="switchMode()"> 🎤 Voice Mode</label>
+        </div>
+
+        <div id="textMode">
+            <textarea id="text" placeholder="اكتب النص هنا..." rows="4">مرحباً، كيف حالك؟</textarea><br><br>
+            <button onclick="startText()">🔊 Generate & Play</button>
+        </div>
+
+        <div id="voiceMode" class="hidden">
+            <p>Click the button and speak in Arabic. The AI will listen, process your speech, and respond with voice.</p>
+            <button id="recordBtn" onclick="toggleRecording()">🎤 Start Recording</button>
+            <button onclick="startVoiceConversation()" id="sendVoiceBtn" disabled>📤 Send to AI</button>
+            <audio id="recordingPlayback" controls style="display:none; width: 100%; margin-top: 10px;"></audio>
+        </div>
+
+        <button onclick="clearLog()">Clear Log</button>
+        
+        <div id="audioContainer">
+            <p style="color: #666; font-style: italic;">🎵 AI voice responses will appear here</p>
+        </div>
+        
+        <h4>Logs:</h4>
+        <pre id="log"></pre>
+    </div>
+
+    <script>
+        let mediaRecorder;
+        let audioChunks = [];
+        let recordedBlob = null;
+        let ws = null;
+        let pc = null;
+        let reconnectAttempts = 0;
+        const MAX_RECONNECT_ATTEMPTS = 5;
+
+        function log(msg) {
+            const pre = document.getElementById("log");
+            const timestamp = new Date().toLocaleTimeString();
+            pre.textContent += "[" + timestamp + "] " + msg + "\n";
+            pre.scrollTop = pre.scrollHeight;
+            console.log(msg);
+        }
+
+        function clearLog() {
+            document.getElementById("log").textContent = "";
+        }
+
+        function connectWebSocket() {
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = wsProtocol + "//" + window.location.host + "/ws";
+            
+            log("🔌 Connecting to WebSocket...");
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                log("✅ WebSocket connected!");
+                reconnectAttempts = 0;
+            };
+
+            ws.onmessage = async (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleWebSocketMessage(data);
+                } catch (e) {
+                    log("❌ Failed to parse WebSocket message: " + e.message);
+                }
+            };
+
+            ws.onerror = (error) => {
+                log("❌ WebSocket error");
+            };
+
+            ws.onclose = () => {
+                log("🔌 WebSocket disconnected");
+                
+                if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                    reconnectAttempts++;
+                    const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000);
+                    log("🔄 Reconnecting in " + (delay/1000) + "s... (attempt " + reconnectAttempts + "/" + MAX_RECONNECT_ATTEMPTS + ")");
+                    setTimeout(connectWebSocket, delay);
+                } else {
+                    log("❌ Max reconnection attempts reached. Please refresh the page.");
+                }
+            };
+        }
+
+        function handleWebSocketMessage(data) {
+            switch(data.type) {
+                case 'sdp_answer':
+                    log("📥 Received SDP answer from server");
+                    handleSDPAnswer(data.answer);
+                    break;
+                case 'ice_candidate':
+                    log("🧊 Received ICE candidate");
+                    if (pc && data.candidate) {
+                        pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    }
+                    break;
+                case 'transcription':
+                    log("🗣️ You said: " + data.text);
+                    break;
+                case 'llm_response':
+                    log("🤖 AI responded: " + data.text);
+                    break;
+                case 'tts_start':
+                    log("🔊 Generating speech...");
+                    document.getElementById('audioContainer').innerHTML = '<p><strong>⏳ Preparing AI voice response...</strong></p>';
+                    break;
+                case 'tts_generated':
+                    log("✅ Speech generated (" + (data.file_size/1024).toFixed(2) + " KB)");
+                    
+                    if (data.audio_data) {
+                        log("📦 Received audio data: " + (data.audio_data.length / 1024).toFixed(2) + " KB base64");
+                        
+                        const container = document.getElementById('audioContainer');
+                        container.innerHTML = '';
+                        
+                        const label = document.createElement('p');
+                        label.innerHTML = '<strong>🔊 AI Voice Response:</strong>';
+                        
+                        const audio = document.createElement('audio');
+                        audio.controls = true;
+                        audio.autoplay = true;
+                        audio.style.width = '100%';
+                        audio.style.marginTop = '10px';
+                        
+                        try {
+                            const byteCharacters = atob(data.audio_data);
+                            const byteNumbers = new Array(byteCharacters.length);
+                            for (let i = 0; i < byteCharacters.length; i++) {
+                                byteNumbers[i] = byteCharacters.charCodeAt(i);
+                            }
+                            const byteArray = new Uint8Array(byteNumbers);
+                            const blob = new Blob([byteArray], { type: 'audio/wav' });
+                            const url = URL.createObjectURL(blob);
+                            
+                            log("✅ Audio blob created: " + (blob.size / 1024).toFixed(2) + " KB");
+                            
+                            audio.src = url;
+                            container.appendChild(label);
+                            container.appendChild(audio);
+                            
+                            audio.onloadedmetadata = () => log("📊 Audio loaded, duration: " + audio.duration.toFixed(2) + "s");
+                            audio.onplay = () => log("▶️ Playing AI voice!");
+                            audio.onplaying = () => log("🎵 Audio playing...");
+                            audio.onended = () => {
+                                log("✅ Playback finished");
+                                URL.revokeObjectURL(url);
+                            };
+                            audio.onerror = (e) => {
+                                log("❌ Audio playback error");
+                                console.error('Audio error:', e);
+                            };
+                            
+                            audio.play().catch(err => {
+                                log("⚠️ Autoplay blocked: " + err.message);
+                            });
+                        } catch (error) {
+                            log("❌ Error creating audio: " + error.message);
+                            console.error('Audio creation error:', error);
+                        }
+                    } else {
+                        log("⚠️ No audio_data in message");
+                        document.getElementById('audioContainer').innerHTML = '<p><strong>❌ No audio data received</strong></p>';
+                    }
+                    break;
+                case 'audio_playing':
+                    log("▶️ AI is speaking!");
+                    break;
+                case 'renegotiate_offer':
+                    log("🔄 Renegotiating connection for new audio...");
+                    handleRenegotiation(data.offer);
+                    break;
+                case 'audio_finished':
+                    log("✅ AI finished speaking");
+                    break;
+                case 'error':
+                    log("❌ Server error: " + data.message);
+                    break;
+                default:
+                    log("📨 Unknown message type: " + data.type);
+            }
+        }
+
+        async function handleRenegotiation(offer) {
+            try {
+                if (!pc) {
+                    log("❌ No peer connection for renegotiation");
+                    return;
+                }
+                
+                log("🔄 Current connection state: " + pc.connectionState);
+                
+                if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+                    log("❌ Connection " + pc.connectionState + ", cannot renegotiate");
+                    return;
+                }
+                
+                if (pc.connectionState === 'connecting') {
+                    log("⏳ Waiting for connection to stabilize...");
+                    await new Promise(resolve => {
+                        const checkInterval = setInterval(() => {
+                            if (pc.connectionState === 'connected') {
+                                clearInterval(checkInterval);
+                                resolve();
+                            }
+                        }, 100);
+                        
+                        setTimeout(() => {
+                            clearInterval(checkInterval);
+                            resolve();
+                        }, 3000);
+                    });
+                }
+                
+                log("✅ Applying renegotiation...");
+                
+                const offerDesc = new RTCSessionDescription(offer);
+                await pc.setRemoteDescription(offerDesc);
+                
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                
+                ws.send(JSON.stringify({
+                    type: 'renegotiate_answer',
+                    answer: {
+                        sdp: pc.localDescription.sdp,
+                        type: pc.localDescription.type
+                    }
+                }));
+                
+                log("✅ Renegotiation completed");
+            } catch (error) {
+                log("❌ Renegotiation failed: " + error.message);
+                console.error('Renegotiation error:', error);
+            }
+        }
+
+        async function handleSDPAnswer(answer) {
+            try {
+                await pc.setRemoteDescription(new RTCSessionDescription(answer));
+                log("✅ Connection established!");
+            } catch (error) {
+                log("❌ Error setting remote description: " + error.message);
+            }
+        }
+
+        function switchMode() {
+            const mode = document.querySelector('input[name="mode"]:checked').value;
+            const textMode = document.getElementById('textMode');
+            const voiceMode = document.getElementById('voiceMode');
+            
+            if (mode === 'text') {
+                textMode.classList.remove('hidden');
+                voiceMode.classList.add('hidden');
+            } else {
+                textMode.classList.add('hidden');
+                voiceMode.classList.remove('hidden');
+            }
+        }
+
+        async function toggleRecording() {
+            const btn = document.getElementById('recordBtn');
+            const sendBtn = document.getElementById('sendVoiceBtn');
+            const playback = document.getElementById('recordingPlayback');
+
+            if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    audioChunks = [];
+                    mediaRecorder = new MediaRecorder(stream);
+                    
+                    mediaRecorder.ondataavailable = (event) => {
+                        audioChunks.push(event.data);
+                    };
+                    
+                    mediaRecorder.onstop = async () => {
+                        recordedBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                        const url = URL.createObjectURL(recordedBlob);
+                        playback.src = url;
+                        playback.style.display = 'block';
+                        sendBtn.disabled = false;
+                        log("✅ Recording saved.");
+
+                        log("🤖 Automatically sending to AI...");
+                        await startVoiceConversation();
+                    };
+                    
+                    mediaRecorder.start();
+                    btn.textContent = '⏹️ Stop Recording';
+                    btn.classList.add('recording');
+                    sendBtn.disabled = true;
+                    playback.style.display = 'none';
+                    log("🎤 Recording started... Speak now!");
+                    
+                } catch (err) {
+                    log("❌ Microphone error: " + err.message);
+                }
+            } else {
+                mediaRecorder.stop();
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                btn.textContent = '🎤 Start Recording';
+                btn.classList.remove('recording');
+                log("⏸️ Recording stopped.");
+            }
+        }
+
+        async function startVoiceConversation() {
+            if (!recordedBlob) {
+                log("❌ No recording found!");
+                return;
+            }
+
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                log("❌ WebSocket not connected!");
+                return;
+            }
+
+            log("🚀 Starting voice conversation...");
+            
+            if (!pc || pc.connectionState === 'closed' || pc.connectionState === 'failed') {
+                log("🔌 Setting up WebRTC connection for voice...");
+                await setupWebRTCForVoice();
+            }
+            
+            const reader = new FileReader();
+            reader.onloadend = async () => {
+                const base64Audio = reader.result.split(',')[1];
+                
+                ws.send(JSON.stringify({
+                    type: 'voice_input',
+                    audio: base64Audio
+                }));
+                
+                log("📤 Audio sent to server for processing");
+            };
+            reader.readAsDataURL(recordedBlob);
+        }
+
+        async function setupWebRTCForVoice() {
+            try {
+                log("🔧 Creating WebRTC connection for voice mode...");
+                
+                pc = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' },
+                        { urls: 'stun:stun.services.mozilla.com' }
+                    ],
+                    iceTransportPolicy: 'all',
+                    bundlePolicy: 'max-bundle',
+                    rtcpMuxPolicy: 'require',
+                    iceCandidatePoolSize: 10
+                });
+
+                const dataChannel = pc.createDataChannel('keepalive', {
+                    ordered: true,
+                    maxRetransmits: 3
+                });
+                
+                let keepaliveInterval;
+                
+                dataChannel.onopen = () => {
+                    log("📡 Data channel opened");
+                    keepaliveInterval = setInterval(() => {
+                        if (dataChannel.readyState === 'open') {
+                            try {
+                                dataChannel.send('ping');
+                            } catch (e) {
+                                console.error('Keepalive failed:', e);
+                            }
+                        }
+                    }, 3000);
+                };
+                
+                dataChannel.onclose = () => {
+                    if (keepaliveInterval) clearInterval(keepaliveInterval);
+                };
+
+                pc.addTransceiver('audio', { direction: 'recvonly' });
+
+                pc.ontrack = (event) => {
+                    log("🎧 Audio track received!");
+                    
+                    const container = document.getElementById('audioContainer');
+                    container.innerHTML = '';
+                    
+                    const label = document.createElement('p');
+                    label.innerHTML = '<strong>🔊 AI Voice Response:</strong>';
+                    
+                    const audio = document.createElement('audio');
+                    audio.srcObject = event.streams[0];
+                    audio.autoplay = true;
+                    audio.controls = true;
+                    audio.style.width = '100%';
+                    audio.style.marginTop = '10px';
+                    
+                    container.appendChild(label);
+                    container.appendChild(audio);
+                    
+                    audio.onplay = () => log("▶️ Playing AI voice!");
+                    audio.onplaying = () => log("🎵 Audio playing...");
+                    audio.onended = () => log("✅ Playback finished");
+                    audio.onerror = (e) => log("❌ Audio error");
+                    
+                    audio.play().catch(err => {
+                        log("⚠️ Autoplay blocked: " + err.message);
+                    });
+                };
+
+                pc.onicecandidate = (event) => {
+                    if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({
+                            type: 'ice_candidate',
+                            candidate: event.candidate.toJSON()
+                        }));
+                    }
+                };
+
+                pc.oniceconnectionstatechange = () => {
+                    log("🧊 ICE: " + pc.iceConnectionState);
+                    if (pc.iceConnectionState === 'failed') {
+                        pc.restartIce();
+                    }
+                };
+                
+                pc.onconnectionstatechange = () => {
+                    log("🔗 Connection: " + pc.connectionState);
+                };
+
+                const offer = await pc.createOffer({
+                    offerToReceiveAudio: true,
+                    offerToReceiveVideo: false
+                });
+                await pc.setLocalDescription(offer);
+                
+                log("📤 Sending WebRTC offer...");
+                ws.send(JSON.stringify({
+                    type: 'webrtc_offer',
+                    offer: {
+                        sdp: pc.localDescription.sdp,
+                        type: pc.localDescription.type
+                    },
+                    text: ""
+                }));
+
+                await new Promise((resolve) => {
+                    const timeout = setTimeout(() => {
+                        resolve();
+                    }, 10000);
+                    
+                    const checkConnection = setInterval(() => {
+                        if (pc.connectionState === 'connected') {
+                            clearInterval(checkConnection);
+                            clearTimeout(timeout);
+                            log("✅ WebRTC ready!");
+                            resolve();
+                        }
+                    }, 100);
+                });
+                
+            } catch (error) {
+                log("❌ Setup error: " + error.message);
+                console.error(error);
+            }
+        }
+
+        async function startText() {
+            const text = document.getElementById('text').value;
+            if (!text.trim()) {
+                log("❌ Please enter some text!");
+                return;
+            }
+
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                log("❌ WebSocket not connected!");
+                return;
+            }
+
+            await setupWebRTC(text);
+        }
+
+        async function setupWebRTC(text) {
+            try {
+                log("🚀 Starting WebRTC...");
+                
+                pc = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' }
+                    ]
+                });
+
+                pc.addTransceiver('audio', { direction: 'recvonly' });
+
+                pc.ontrack = (event) => {
+                    log("🎧 Audio track received!");
+                    
+                    const container = document.getElementById('audioContainer');
+                    container.innerHTML = '';
+                    
+                    const label = document.createElement('p');
+                    label.innerHTML = '<strong>🔊 Generated Speech:</strong>';
+                    
+                    const audio = document.createElement('audio');
+                    audio.srcObject = event.streams[0];
+                    audio.autoplay = true;
+                    audio.controls = true;
+                    audio.style.width = '100%';
+                    audio.style.marginTop = '10px';
+                    
+                    container.appendChild(label);
+                    container.appendChild(audio);
+                    
+                    audio.onplay = () => log("▶️ Playing speech!");
+                    audio.onended = () => log("✅ Playback finished");
+                    
+                    audio.play().catch(err => {
+                        log("⚠️ Autoplay blocked");
+                    });
+                };
+
+                pc.onicecandidate = (event) => {
+                    if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({
+                            type: 'ice_candidate',
+                            candidate: event.candidate.toJSON()
+                        }));
+                    }
+                };
+
+                pc.oniceconnectionstatechange = () => log("🧊 ICE: " + pc.iceConnectionState);
+                pc.onconnectionstatechange = () => log("🔗 Connection: " + pc.connectionState);
+
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                
+                log("📤 Sending offer...");
+                ws.send(JSON.stringify({
+                    type: 'webrtc_offer',
+                    offer: {
+                        sdp: pc.localDescription.sdp,
+                        type: pc.localDescription.type
+                    },
+                    text: text
+                }));
+                
+            } catch (error) {
+                log("❌ Error: " + error.message);
+                console.error(error);
+            }
+        }
+
+        window.onload = () => {
+            connectWebSocket();
+        };
+    </script>
+</body>
+</html>
