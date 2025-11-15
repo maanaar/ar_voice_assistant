@@ -1,45 +1,39 @@
-"""TTS Model wrapper."""
+"""TTS Model wrapper (lazy)."""
 from TTS.api import TTS
 import config
 
+_tts_instance = None
 
 class TTSModel:
-    """Wrapper for Text-to-Speech model."""
-    
+    """Light wrapper for TTS with lazy loading."""
+
     def __init__(self):
-        """Initialize TTS model."""
-        print("🔊 Loading Arabic TTS model...")
-        self.model = TTS(
-            model_path=config.TTS_MODEL_PATH,
-            config_path=config.TTS_CONFIG_PATH
-        )
-        print("✅ TTS model loaded.")
-    
+        # don't load heavy model on instantiation
+        self._model = None
+
+    def _load(self):
+        if self._model is None:
+            print("🔊 Loading Arabic TTS model...")
+            self._model = TTS(
+                model_path=config.TTS_MODEL_PATH,
+                config_path=config.TTS_CONFIG_PATH
+            )
+            print("✅ TTS model loaded.")
+
     def synthesize(self, text: str, output_path: str, speaker_wav: str = None):
-        """
-        Synthesize text to audio file.
-        
-        Args:
-            text: Text to synthesize
-            output_path: Path to save audio file
-            speaker_wav: Reference speaker audio file
-        """
+        """Synthesize text to an audio file (lazy loads model)."""
         speaker_wav = speaker_wav or config.REFERENCE_WAV
-        
-        self.model.tts_to_file(
+        self._load()
+        # use model's tts_to_file (keeps existing API)
+        self._model.tts_to_file(
             text=text,
             file_path=output_path,
             speaker_wav=speaker_wav,
             language=config.AUDIO_LANGUAGE
         )
 
-
-# Global TTS instance
-_tts_instance = None
-
-
 def get_tts_model() -> TTSModel:
-    """Get or create global TTS model instance."""
+    """Return a global TTSModel singleton (lazy)."""
     global _tts_instance
     if _tts_instance is None:
         _tts_instance = TTSModel()
