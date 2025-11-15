@@ -1,5 +1,6 @@
-"""WebSocket route handlers (lazy models)."""
+"""WebSocket route handlers (models preloaded)."""
 import os
+import asyncio
 import tempfile
 import traceback
 from fastapi import WebSocket, WebSocketDisconnect
@@ -8,7 +9,7 @@ from aiortc.contrib.media import MediaPlayer
 
 from services.conversation import ConversationSession
 from services.audio_processor import get_audio_processor
-from utils.webrtc import create_rtc_configuration, parse_ice_candidate
+from utils.webrtc import create_peer_connection, parse_ice_candidate
 import config
 
 class WebSocketHandler:
@@ -17,7 +18,7 @@ class WebSocketHandler:
     def __init__(self):
         self.pcs = set()
         self.audio_processor = get_audio_processor()
-        # do NOT load models in __init__
+        # Get references to preloaded models
         self._tts = None
         self._llm = None
     
@@ -73,7 +74,8 @@ class WebSocketHandler:
             offer_data = data.get("offer")
             offer = RTCSessionDescription(sdp=offer_data["sdp"], type=offer_data["type"])
             
-            pc = create_rtc_configuration()
+            # ✅ FIXED: Use create_peer_connection() instead of create_rtc_configuration()
+            pc = create_peer_connection()
             self.pcs.add(pc)
             
             # Text mode: synthesize immediate TTS if client sent text
@@ -142,12 +144,12 @@ class WebSocketHandler:
                 await websocket.send_json({"type": "error", "message": "No speech detected"})
                 return
 
-            # LLM (lazy)
+            # LLM (already preloaded)
             llm = self._get_llm()
             response_text = await llm.generate_response(text_input)
             await websocket.send_json({"type": "llm_response", "text": response_text})
 
-            # Queue TTS for playback (session.enqueue should handle playback)
+            # Queue TTS for playback
             if session:
                 await session.enqueue(response_text)
                 print("💬 Response enqueued for playback")

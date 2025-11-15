@@ -12,6 +12,12 @@ def create_rtc_configuration() -> RTCConfiguration:
     )
 
 
+def create_peer_connection() -> RTCPeerConnection:
+    """Create RTCPeerConnection with proper configuration."""
+    rtc_config = create_rtc_configuration()
+    return RTCPeerConnection(configuration=rtc_config)
+
+
 def parse_ice_candidate(candidate_data: dict) -> RTCIceCandidate:
     """
     Parse ICE candidate from client data.

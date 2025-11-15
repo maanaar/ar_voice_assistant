@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 
 import config
 
-# Import models (do NOT load them here)
+# Import models
 from models.tts_model import get_tts_model
 from models.whisper_model import get_whisper_model
 from models.llm_model import get_llm_model
@@ -22,13 +22,45 @@ ws_handler = WebSocketHandler()
 
 @app.on_event("startup")
 async def startup_event():
-    """Server startup event."""
+    """Server startup event - PRELOAD ALL MODELS."""
     print("🚀 Starting Arabic Voice AI Assistant...")
     print("="*60)
-
-    print("🟢 Server started WITHOUT loading any models.")
-    print("="*60)
-    print(f"📍 Server ready at: http://{config.HOST}:{config.PORT}/ui")
+    
+    # ✅ PRELOAD ALL MODELS AT STARTUP
+    print("📦 Preloading models...")
+    
+    try:
+        # Load TTS model
+        print("🔊 Loading TTS model...")
+        tts = get_tts_model()
+        tts._load()  # Force load
+        print("✅ TTS model loaded")
+        
+        # Load Whisper model
+        print("🎤 Loading Whisper model...")
+        whisper = get_whisper_model()
+        whisper._load()  # Force load
+        print("✅ Whisper model loaded")
+        
+        # Load LLM model (Gemini - lightweight, just API config)
+        print("🤖 Loading Gemini LLM...")
+        llm = get_llm_model()
+        llm._load_model()  # Force load
+        print("✅ Gemini LLM loaded")
+        
+        print("="*60)
+        print("🟢 ALL MODELS LOADED AND READY!")
+        print("="*60)
+        
+    except Exception as e:
+        print(f"❌ Error loading models: {e}")
+        import traceback
+        traceback.print_exc()
+        print("="*60)
+        print("⚠️ Server started but models may not be ready")
+        print("="*60)
+    
+    print(f"🌐 Server ready at: http://{config.HOST}:{config.PORT}/ui")
     print("="*60)
 
 
