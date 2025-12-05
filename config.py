@@ -4,7 +4,7 @@ from pathlib import Path
 
 # Server Configuration
 HOST = "0.0.0.0"
-PORT = 5002
+PORT = 8080
 
 # Model Paths
 TTS_MODEL_PATH = "/root/.local/share/tts/tts_models--ar--custom--egtts_v0.1"
