@@ -1,69 +1,33 @@
-FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
+FROM ghcr.io/coqui-ai/tts
 
-# System deps
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg git wget curl build-essential libsndfile1 && \
-    rm -rf /var/lib/apt/lists/*
+    git wget curl ffmpeg libsndfile1 pkg-config \
+    libavcodec-dev libavformat-dev libavdevice-dev libavutil-dev \
+    libavfilter-dev libswscale-dev libswresample-dev \
+    && rm -rf /var/lib/apt/lists/*
 
+# Copy and install Python dependencies
+COPY requirements.txt /root/requirements.txt
 RUN pip install --upgrade pip
-RUN pip install TTS huggingface_hub uvicorn fastapi soundfile pydub numpy
+RUN pip install av==12.0.0 --only-binary=:all:
+RUN pip install -r /root/requirements.txt huggingface_hub
 
-# Download Egyptian model
-RUN python3 - << 'EOF'
-from huggingface_hub import snapshot_download
-import os, shutil, json
+# Set working directory
+WORKDIR /app
 
-model_path = snapshot_download(repo_id="OmarSamir/EGTTS-V0.1")
-target_dir = "/root/.local/share/tts/tts_models--ar--custom--egtts_v0.1"
-os.makedirs(target_dir, exist_ok=True)
+# Copy project
+COPY . /app
 
-for f in os.listdir(model_path):
-    src = os.path.join(model_path, f)
-    dst = os.path.join(target_dir, f)
-    if os.path.isfile(src):
-        shutil.copy2(src, dst)
+# Copy and run model setup scripts
+COPY docker-scripts/download_eg_model.py /root/download_eg_model.py
+COPY docker-scripts/register_model.py /root/register_model.py
 
-cfg_file = os.path.join(target_dir, "config.json")
-if not os.path.exists(cfg_file):
-    with open(cfg_file, "w") as f:
-        json.dump({
-            "model": "egtts_v0.1",
-            "dataset": "custom",
-            "language": "ar",
-            "description": "Egyptian Arabic TTS model"
-        }, f, indent=4)
-EOF
+RUN python3 /root/download_eg_model.py
+RUN python3 /root/register_model.py
 
-# Register model to Coqui JSON
-RUN python3 - << 'EOF'
-import json, os
-os.makedirs("/root/TTS", exist_ok=True)
-models_file = "/root/TTS/.models.json"
+# Expose port
+EXPOSE 8080
 
-if os.path.exists(models_file):
-    models = json.load(open(models_file))
-else:
-    models = {"tts_models": {}, "vocoder_models": {}}
-
-models["tts_models"].setdefault("ar", {}).setdefault("custom", {})
-models["tts_models"]["ar"]["custom"]["egtts_v0.1"] = {
-    "description": "Egyptian Arabic TTS model",
-    "default_vocoder": None,
-    "github_rls_url": None,
-    "commit": None,
-    "license": "mit"
-}
-
-with open(models_file, "w") as f:
-    json.dump(models, f, indent=4)
-EOF
-
-# GPU Env
-ENV NVIDIA_VISIBLE_DEVICES=all
-ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
-
-# Expose TTS port
-EXPOSE 5002
-
-# Run server
-CMD ["bash", "-c", "python3 TTS/server/server.py --model_path /root/.local/share/tts/tts_models--ar--custom--egtts_v0.1 --config_path /root/.local/share/tts/tts_models--ar--custom--egtts_v0.1/config.json --port 5002"]
+# Start FastAPI app on Cloud Run expected port
+CMD ["uvicorn", "ar_voice_assistant.main:app", "--host", "0.0.0.0", "--port", "8080"]
